@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlatformRole {
+  USER
+  SUPER_ADMIN
+}
+
+enum MembershipRole {
+  ORG_ADMIN
+  PROCUREMENT_MANAGER
+  BUYER
+  AP_CLERK
+  ANALYST
+  VIEWER
+}
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+  ON_HOLD
+}
+
+enum RfqStatus {
+  DRAFT
+  OPEN
+  AWARDED
+  CLOSED
+}
+
+enum QuoteStatus {
+  DRAFT
+  SUBMITTED
+  SELECTED
+  REJECTED
+  EXPIRED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum ReceiptStatus {
+  RECORDED
+  DISCREPANCY_RECORDED
+}
+
+enum DiscrepancyType {
+  SHORT_SHIPMENT
+  OVER_DELIVERY
+  DAMAGED
+  PRICE_MISMATCH
+}
+
+enum ReportType {
+  PROCUREMENT_SPEND
+  VENDOR_PERFORMANCE
+  RECEIVING_DISCREPANCY
+  PURCHASE_ORDER_PIPELINE
+  CUSTOM
+}
+
+enum ExportFormat {
+  CSV
+  JSON
+}
+
+enum ExportJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model Organization {
+  id              String             @id @default(cuid())
+  name            String
+  slug            String             @unique
+  memberships     Membership[]
+  sessions        Session[]
+  vendors         Vendor[]
+  rfqs            RequestForQuote[]
+  quotes          Quote[]
+  purchaseOrders  PurchaseOrder[]
+  receipts        Receipt[]
+  discrepancies   Discrepancy[]
+  reportDefinitions ReportDefinition[]
+  exportJobs      ExportJob[]
+  auditLogs       AuditLog[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+}
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String
+  passwordHash  String
+  platformRole  PlatformRole @default(USER)
+  memberships   Membership[]
+  sessions      Session[]
+  createdRfqs   RequestForQuote[] @relation("RfqCreator")
+  submittedQuotes Quote[]    @relation("QuoteCreator")
+  requestedPurchaseOrders PurchaseOrder[] @relation("PurchaseOrderRequester")
+  approvedPurchaseOrders  PurchaseOrder[] @relation("PurchaseOrderApprover")
+  receipts      Receipt[]    @relation("ReceiptRecorder")
+  reportDefinitions ReportDefinition[] @relation("ReportCreator")
+  exportJobs    ExportJob[]  @relation("ExportRequester")
+  auditLogs     AuditLog[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Membership {
+  id             String         @id @default(cuid())
+  userId         String
+  organizationId String
+  role           MembershipRole
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+
+  @@unique([userId, organizationId])
+  @@index([organizationId, role])
+}
+
+model Session {
+  id             String       @id @default(cuid())
+  userId         String
+  organizationId String
+  tokenHash      String       @unique
+  expiresAt      DateTime
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, userId])
+}
+
+model Vendor {
+  id            String       @id @default(cuid())
+  tenantId      String
+  name          String
+  code          String
+  status        VendorStatus @default(ACTIVE)
+  paymentTerms  String
+  country       String
+  contactEmail  String
+  tenant        Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quotes        Quote[]
+  purchaseOrders PurchaseOrder[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+}
+
+model RequestForQuote {
+  id            String       @id @default(cuid())
+  tenantId      String
+  title         String
+  description   String?
+  status        RfqStatus    @default(DRAFT)
+  createdById   String
+  tenant        Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User         @relation("RfqCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  lineItems     RfqLineItem[]
+  quotes        Quote[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([tenantId, status])
+}
+
+model RfqLineItem {
+  id            String           @id @default(cuid())
+  requestForQuoteId String
+  description   String
+  quantity      Int
+  targetUnitPrice Decimal?       @db.Decimal(12, 2)
+  requestForQuote RequestForQuote @relation(fields: [requestForQuoteId], references: [id], onDelete: Cascade)
+
+  @@index([requestForQuoteId])
+}
+
+model Quote {
+  id            String       @id @default(cuid())
+  tenantId      String
+  requestForQuoteId String
+  vendorId      String
+  submittedById String
+  status        QuoteStatus  @default(DRAFT)
+  validUntil    DateTime
+  totalAmount   Decimal      @db.Decimal(12, 2)
+  currency      String
+  tenant        Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestForQuote RequestForQuote @relation(fields: [requestForQuoteId], references: [id], onDelete: Cascade)
+  vendor        Vendor       @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  submittedBy   User         @relation("QuoteCreator", fields: [submittedById], references: [id], onDelete: Restrict)
+  lineItems     QuoteLineItem[]
+  purchaseOrders PurchaseOrder[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([tenantId, requestForQuoteId, status])
+}
+
+model QuoteLineItem {
+  id            String      @id @default(cuid())
+  quoteId       String
+  description   String
+  quantity      Int
+  unitPrice     Decimal     @db.Decimal(12, 2)
+  quote         Quote       @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+}
+
+model PurchaseOrder {
+  id            String              @id @default(cuid())
+  tenantId      String
+  poNumber      String
+  vendorId      String
+  quoteId       String?
+  requestedById String
+  approvedById  String?
+  status        PurchaseOrderStatus @default(DRAFT)
+  currency      String
+  totalAmount   Decimal             @db.Decimal(12, 2)
+  submittedAt   DateTime?
+  approvedAt    DateTime?
+  receivedAt    DateTime?
+  tenant        Organization        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vendor        Vendor              @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  quote         Quote?              @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  requestedBy   User                @relation("PurchaseOrderRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy    User?               @relation("PurchaseOrderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  lineItems     PurchaseOrderLineItem[]
+  receipts      Receipt[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@unique([tenantId, poNumber])
+  @@index([tenantId, status])
+}
+
+model PurchaseOrderLineItem {
+  id             String        @id @default(cuid())
+  purchaseOrderId String
+  description    String
+  quantity       Int
+  unitPrice      Decimal       @db.Decimal(12, 2)
+  purchaseOrder  PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  receiptLineItems ReceiptLineItem[]
+  discrepancies  Discrepancy[]
+
+  @@index([purchaseOrderId])
+}
+
+model Receipt {
+  id             String        @id @default(cuid())
+  tenantId       String
+  purchaseOrderId String
+  receivedById   String
+  receivedAt     DateTime
+  status         ReceiptStatus
+  notes          String?
+  tenant         Organization  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchaseOrder  PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  receivedBy     User          @relation("ReceiptRecorder", fields: [receivedById], references: [id], onDelete: Restrict)
+  lineItems      ReceiptLineItem[]
+  discrepancies  Discrepancy[]
+  createdAt      DateTime      @default(now())
+
+  @@index([tenantId, purchaseOrderId])
+}
+
+model ReceiptLineItem {
+  id                   String               @id @default(cuid())
+  receiptId            String
+  purchaseOrderLineItemId String
+  quantityReceived     Int
+  notes                String?
+  receipt              Receipt              @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLineItem PurchaseOrderLineItem @relation(fields: [purchaseOrderLineItemId], references: [id], onDelete: Restrict)
+
+  @@index([receiptId])
+}
+
+model Discrepancy {
+  id                   String           @id @default(cuid())
+  tenantId             String
+  receiptId            String
+  purchaseOrderLineItemId String
+  type                 DiscrepancyType
+  description          String
+  tenant               Organization     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  receipt              Receipt          @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLineItem PurchaseOrderLineItem @relation(fields: [purchaseOrderLineItemId], references: [id], onDelete: Restrict)
+  createdAt            DateTime         @default(now())
+
+  @@index([tenantId, receiptId])
+}
+
+model ReportDefinition {
+  id            String       @id @default(cuid())
+  tenantId      String
+  name          String
+  description   String?
+  reportType    ReportType
+  dimensions    String[]
+  metrics       String[]
+  filters       Json
+  createdById   String
+  tenant        Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy     User         @relation("ReportCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  exportJobs    ExportJob[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([tenantId, reportType])
+}
+
+model ExportJob {
+  id             String          @id @default(cuid())
+  tenantId       String
+  reportDefinitionId String
+  requestedById  String
+  status         ExportJobStatus @default(PENDING)
+  format         ExportFormat
+  requestedAt    DateTime        @default(now())
+  startedAt      DateTime?
+  completedAt    DateTime?
+  fileName       String?
+  rowCount       Int?
+  errorMessage   String?
+  snapshot       Json
+  tenant         Organization    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reportDefinition ReportDefinition @relation(fields: [reportDefinitionId], references: [id], onDelete: Cascade)
+  requestedBy    User            @relation("ExportRequester", fields: [requestedById], references: [id], onDelete: Restrict)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([tenantId, status, requestedAt])
+}
+
+model AuditLog {
+  id          String       @id @default(cuid())
+  tenantId    String
+  actorUserId String
+  entityType  String
+  entityId    String
+  action      String
+  metadata    Json?
+  tenant      Organization @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor       User         @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  createdAt   DateTime     @default(now())
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+}
