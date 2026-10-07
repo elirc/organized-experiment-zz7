@@ -55,3 +55,43 @@
   What it calls: `/api/seed-demo` and `/api/auth/login`.
   What would break or become insecure if this file were wrong: The app would stop demonstrating the real session path and regress into fake local auth.
   What a junior engineer would likely miswrite here: Simulating login by pushing to `/` without calling the route.
+
+**Corrections to the entries above:**
+
+- `src/lib/http/route.ts` — "What calls it: Every API file" is correct: all 15 route files use `withRouteAuth()` or `withPublicRoute()`. "Validation parsing" is partial: only five handlers use `parseJsonBody()`; the approve, receive, quotes, and exports routes call `schema.parse()` themselves and rely on `handleRouteError()` to map the `ZodError`. And `parseJsonBody()` reads the body outside its `try`, so malformed JSON is a 500 (`route.ts:37`; run).
+- `src/services/purchaseOrderService.ts` — "What it calls" also includes `src/repositories/vendorRepository.ts` (`:76`) and `prisma` directly for transactions (`:43`, `:133`, `:243`). "What would break ... over-receiving inventory" has already partly happened: duplicate entries in one payload over-receive.
+- `src/services/exportJobService.ts` — "Duplicate exports" is not hypothetical; two overlapping `run-pending` calls do it. "Incorrect report snapshots" also already happens: processing ignores the queued snapshot and overwrites it (`:75`, `:94-97`).
+- `src/lib/validation/authSchemas.ts` — "What calls it" omits that its `assertTenantScope()` is called only by a test. The "tenant-scope guard" it lists is not part of any request path.
+
+## Files that are load-bearing but were missing from this list
+
+- `src/lib/validation/purchaseOrderSchemas.ts`
+  What it does: Zod schemas for PO create, approve, and receive, plus `purchaseOrderTransitionMap` and `assertPurchaseOrderStatusTransition()` (`:75-97`).
+  What calls it: the three PO routes and `purchaseOrderService.ts` (`:131`, `:241`).
+  What would break if it were wrong: it already is, in one place. The map lacks `PARTIALLY_RECEIVED → PARTIALLY_RECEIVED`, so a second partial receipt fails. And the guard throws a plain `Error`, so every illegal transition is a 500.
+  What a junior engineer would likely miswrite here: a transition map that lists only the "interesting" edges and forgets the self-loops the service produces.
+
+- `src/repositories/exportJobRepository.ts`
+  What it does: creates jobs, reads the pending batch, and moves jobs through `RUNNING`, `SUCCEEDED`, `FAILED`.
+  What calls it: `exportJobService.ts` only.
+  What would break if it were wrong: the `mark*` methods update by `id` alone (`:71-107`), with neither a status condition nor a tenant condition. That is the root of the double-run race and a latent cross-tenant write if a future caller passes an unscoped ID.
+  What a junior engineer would likely miswrite here: a "claim" step that is really a read followed by an unconditional write.
+
+- `src/services/seedDemoService.ts` and `src/app/api/seed-demo/route.ts`
+  What they do: create the demo tenants, users, and data; return the credentials.
+  What calls them: the login page's seed button.
+  What would break if they were wrong: they are the only way to get users into an empty database, because there is no sign-up route and no seed script. They are also public and return the admin password (`seedDemoService.ts:22-30`).
+  What a junior engineer would likely miswrite here: a setup endpoint with no environment gate.
+
+- `src/lib/env.ts`
+  What it does: reads `SESSION_SECRET` with a fixed fallback (`:15-16`).
+  What calls it: `src/lib/auth/session.ts:18`. Despite its header, `src/lib/prisma/client.ts` does not use it, and `env.databaseUrl` and `env.nodeEnv` are never read.
+  What would break if it were wrong: every session signature depends on it. Changing the secret logs everyone out, because every JWT then fails verification.
+
+- `src/hooks/use-*-data.ts` (five files)
+  What they do: fetch one endpoint each through React Query.
+  What would break if they were wrong: they are already wrong in one way. Each swallows every error and returns hard-coded sample data, so 401, 403, and 500 all render as plausible content.
+
+- `src/repositories/sourcingRepository.ts`
+  What it does: RFQ and quote persistence, including `selectQuoteAndAwardRfq()` (`:153-192`), a three-statement transition run inside the PO-create transaction.
+  What would break if it were wrong: quote selection would leave sibling quotes `SUBMITTED` or the RFQ `OPEN`. Its `findQuoteById()` cannot join a transaction (`:134-151`), which is why the quote status check in `createPurchaseOrder()` is outside it.
